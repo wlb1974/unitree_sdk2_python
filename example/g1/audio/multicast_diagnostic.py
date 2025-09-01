@@ -15,7 +15,7 @@ import sys
 
 # Configuration
 GROUP_IP = "239.255.0.1"
-PORT = 5555
+PORT = 7400
 TEST_DURATION = 10  # seconds
 
 def print_header(title):
