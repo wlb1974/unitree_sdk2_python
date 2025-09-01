@@ -14,7 +14,7 @@ import subprocess
 import sys
 
 # Configuration
-GROUP_IP = "239.168.123.161"
+GROUP_IP = "239.255.0.1"
 PORT = 5555
 TEST_DURATION = 10  # seconds
 
