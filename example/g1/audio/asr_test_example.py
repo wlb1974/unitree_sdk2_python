@@ -19,13 +19,14 @@ import sys
 import socket
 import struct
 import threading
+import platform
 from unitree_sdk2py.core.channel import ChannelSubscriber, ChannelFactoryInitialize
 from unitree_sdk2py.g1.audio.g1_audio_client import AudioClient
 from unitree_sdk2py.idl.std_msgs.msg.dds_ import String_
 
 # ASR Configuration constants (matching C++ code)
 AUDIO_SUBSCRIBE_TOPIC = "rt/audio_msg"
-GROUP_IP = "192.168.123.161"
+GROUP_IP = "239.168.123.161"  # 正确的组播地址
 PORT = 5555
 WAV_SECOND = 5  # record seconds
 WAV_LEN = 16000 * 2 * WAV_SECOND  # 16kHz, 16-bit, mono
@@ -39,6 +40,7 @@ class ASRTestClient:
         self.is_recording = False
         
         print(f"Initializing ASR Test Client with network interface: {network_interface}")
+        print(f"Platform: {platform.system()} {platform.release()}")
         
         # Initialize channel factory
         ChannelFactoryInitialize(0, network_interface)
@@ -77,6 +79,47 @@ class ASRTestClient:
             print(f"Error getting local IP: {e}")
             return "127.0.0.1"
     
+    def test_multicast_connectivity(self):
+        """Test basic multicast connectivity"""
+        print("\n=== Testing Multicast Connectivity ===")
+        
+        try:
+            # Create test socket
+            test_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            test_sock.settimeout(2.0)
+            
+            # Bind to any address
+            test_sock.bind(('', 0))
+            print(f"Test socket bound to port: {test_sock.getsockname()[1]}")
+            
+            # Try to join multicast group
+            try:
+                mreq = struct.pack("4sl", socket.inet_aton(GROUP_IP), socket.INADDR_ANY)
+                test_sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+                print(f"Successfully joined multicast group: {GROUP_IP}")
+            except Exception as e:
+                print(f"Failed to join multicast group: {e}")
+                return False
+            
+            # Test receiving data
+            print("Testing multicast data reception (timeout: 2s)...")
+            try:
+                data, addr = test_sock.recvfrom(1024)
+                print(f"Received data from {addr}: {len(data)} bytes")
+                return True
+            except socket.timeout:
+                print("No data received within timeout (this is normal if no one is sending)")
+                return True
+            except Exception as e:
+                print(f"Error receiving data: {e}")
+                return False
+            finally:
+                test_sock.close()
+                
+        except Exception as e:
+            print(f"Multicast connectivity test failed: {e}")
+            return False
+    
     def record_audio_thread(self):
         """Thread function for recording audio from multicast"""
         try:
@@ -85,12 +128,23 @@ class ASRTestClient:
             # Create UDP socket
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.sock.settimeout(1.0)  # 1 second timeout
+            
+            # Set socket options for better multicast support
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            
+            # Bind to specific port
             local_addr = ('', PORT)
             self.sock.bind(local_addr)
+            print(f"Socket bound to port {PORT}")
             
             # Join multicast group
-            mreq = struct.pack("4sl", socket.inet_aton(GROUP_IP), socket.INADDR_ANY)
-            self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+            try:
+                mreq = struct.pack("4sl", socket.inet_aton(GROUP_IP), socket.INADDR_ANY)
+                self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+                print(f"Successfully joined multicast group: {GROUP_IP}")
+            except Exception as e:
+                print(f"Failed to join multicast group: {e}")
+                return
             
             local_ip = self.get_local_ip_for_multicast()
             print(f"Local IP: {local_ip}")
@@ -100,27 +154,57 @@ class ASRTestClient:
             total_bytes = 0
             pcm_data = []
             print("Starting audio recording...")
+            print("Waiting for audio data from multicast stream...")
+            
+            # Add packet counter for debugging
+            packet_count = 0
+            last_packet_time = time.time()
             
             while total_bytes < WAV_LEN and self.is_recording:
                 try:
                     buffer, addr = self.sock.recvfrom(2048)
                     if buffer:
+                        packet_count += 1
+                        current_time = time.time()
                         len_data = len(buffer)
                         sample_count = len_data // 2
                         samples = struct.unpack(f'<{sample_count}h', buffer)
                         pcm_data.extend(samples)
                         total_bytes += len_data
                         
+                        # Print packet info for first few packets
+                        if packet_count <= 5:
+                            print(f"Packet {packet_count}: {len_data} bytes from {addr}")
+                            print(f"  First 4 samples: {samples[:4] if len(samples) >= 4 else samples}")
+                        
                         # Progress indicator
                         if total_bytes % (WAV_LEN // 10) == 0:
                             progress = (total_bytes / WAV_LEN) * 100
                             print(f"Recording progress: {progress:.1f}% ({total_bytes}/{WAV_LEN} bytes)")
+                        
+                        last_packet_time = current_time
                             
                 except socket.timeout:
+                    # Print timeout message every 10 seconds
+                    current_time = time.time()
+                    if current_time - last_packet_time > 10:
+                        print(f"No audio data received for {int(current_time - last_packet_time)}s...")
+                        print("Possible issues:")
+                        print("  1. Robot is not streaming audio to multicast")
+                        print("  2. Network doesn't support multicast")
+                        print("  3. Firewall blocking multicast traffic")
+                        print("  4. Wrong multicast address or port")
+                        last_packet_time = current_time
                     continue
                 except Exception as e:
                     print(f"Error receiving audio data: {e}")
                     break
+            
+            # Print final statistics
+            print(f"\nRecording completed:")
+            print(f"  Total packets received: {packet_count}")
+            print(f"  Total bytes received: {total_bytes}")
+            print(f"  Total samples: {len(pcm_data)}")
             
             # Save recorded audio to WAV file
             if pcm_data:
@@ -139,6 +223,12 @@ class ASRTestClient:
                     print(f"Error saving WAV file: {e}")
             else:
                 print("No audio data recorded")
+                print("\nTroubleshooting tips:")
+                print("1. Check if the robot is configured to stream audio to multicast")
+                print("2. Verify the multicast address and port are correct")
+                print("3. Ensure your network supports multicast routing")
+                print("4. Check firewall settings")
+                print("5. Try running as administrator (Windows)")
             
         except Exception as e:
             print(f"Error in recording thread: {e}")
@@ -234,6 +324,11 @@ class ASRTestClient:
             self.test_tts()
             self.test_led_control()
             
+            # Test multicast connectivity
+            if not self.test_multicast_connectivity():
+                print("Warning: Multicast connectivity test failed!")
+                print("This may indicate network configuration issues.")
+            
             print("\n" + "="*50)
             print("Basic audio tests completed. Starting ASR test...")
             print("="*50)
@@ -244,6 +339,11 @@ class ASRTestClient:
             print("ASR test is running. Press Ctrl+C to stop...")
             print("Listening for ASR messages on topic: rt/audio_msg")
             print("Recording audio from multicast: {}:{}".format(GROUP_IP, PORT))
+            print("\nIf no audio data is received, check:")
+            print("1. Robot multicast audio streaming configuration")
+            print("2. Network multicast support")
+            print("3. Firewall settings")
+            print("4. Run as administrator (Windows)")
             
             # Keep running to receive ASR messages
             while True:
@@ -262,6 +362,7 @@ def main():
     if len(sys.argv) < 2:
         print(f"Usage: python3 {sys.argv[0]} <network_interface>")
         print("Example: python3 {sys.argv[0]} eth0")
+        print("\nNote: On Windows, you may need to run as Administrator")
         sys.exit(1)
 
     network_interface = sys.argv[1]
