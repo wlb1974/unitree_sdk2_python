@@ -25,7 +25,7 @@ from unitree_sdk2py.idl.std_msgs.msg.dds_ import String_
 
 # ASR Configuration constants (matching C++ code)
 AUDIO_SUBSCRIBE_TOPIC = "rt/audio_msg"
-GROUP_IP = "239.168.123.161"
+GROUP_IP = "192.168.123.161"
 PORT = 5555
 WAV_SECOND = 5  # record seconds
 WAV_LEN = 16000 * 2 * WAV_SECOND  # 16kHz, 16-bit, mono
