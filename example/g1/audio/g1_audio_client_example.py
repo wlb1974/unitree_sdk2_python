@@ -55,9 +55,11 @@ class ASRAudioClient:
             
             # Check if it's in the expected subnet
             if local_ip.startswith("192.168.123."):
+                print(f"Local IP: {local_ip}")
                 return local_ip
             else:
                 print(f"Warning: Local IP {local_ip} is not in expected subnet 192.168.123.x")
+                print(f"Local IP: {local_ip}")
                 return local_ip
         except Exception as e:
             print(f"Error getting local IP: {e}")
